@@ -1,34 +1,23 @@
-import os
+import io
 import streamlit as st
 import pandas as pd
 import numpy as np
-from datetime import datetime, date
-from io import StringIO
+from datetime import  date
 import matplotlib.pyplot as plt
 import yfinance as yf
-import base64
 import plotly.graph_objs as go
 import plotly.colors
-from scipy.optimize import newton
 
 st.set_page_config(layout="wide")
 
 st.title("Suivi de PEA - Valorisation & Rendements")
 
-# st.sidebar.header("Import des fichiers")
-# titres_file = st.sidebar.file_uploader("Historique titres", type="csv")
-# especes_file = st.sidebar.file_uploader("Historique espèces", type="csv")
-# ticker_mapping_file = st.sidebar.file_uploader("Correspondance libellé → Ticker", type="csv")
-
-# titres_file = 'C:/Users/smara/Downloads/PEAPME/titres.csv'
-# especes_file = 'C:/Users/smara/Downloads/PEAPME/especes.csv'
-# ticker_mapping_file = 'C:/Users/smara/Downloads/PEAPME/tickerMatching.csv'
-
-titres_file = 'C:/GIT/FortuneoPEAViewer/Unstaged/20250608/titresPEA.csv'
-especes_file = 'C:/GIT/FortuneoPEAViewer/Unstaged/20250608/operationsPEA.csv'
-# ticker_mapping_file = 'C:/GIT/FortuneoPEAViewer/Unstaged/20250608/tickerMatching.csv'
-
-ticker_mapping_file = os.path.dirname(titres_file) + "/tickerMatching.csv"
+st.sidebar.header("Import des fichiers")
+titres_file = st.sidebar.file_uploader("Historique titres", type="csv")
+especes_file = st.sidebar.file_uploader("Historique espèces", type="csv")
+ticker_mapping_file = st.sidebar.file_uploader("Correspondance Tickers", type="csv")
+# if especes_file is not None and especes_file != '':
+#     ticker_mapping_file = os.path.dirname(titres_file) + "/tickerMatching.csv"
 
 ticker_map = {}
 if ticker_mapping_file:
@@ -63,13 +52,13 @@ if titres_file and especes_file:
         st.error("Impossible de déterminer une plage de dates valide.")
         st.stop()
 
-    ticker_mapping_file = os.path.dirname(titres_file) + "/tickerMatching.csv"
+    # ticker_mapping_file = os.path.dirname(titres_file) + "/tickerMatching.csv"
 
     # Charger le mapping existant ou le créer si vide
-    try:
-        mapping_df = pd.read_csv(ticker_mapping_file, encoding="latin1", sep=";")
-    except Exception:
-        mapping_df = pd.DataFrame(columns=["label", "ticker"])        
+    # try:
+    #     mapping_df = pd.read_csv(ticker_mapping_file, encoding="latin1", sep=";")
+    # except Exception:
+    mapping_df = pd.DataFrame(columns=["label", "ticker"])        
 
     min_date = all_dates.min()
     max_date = date.today()
@@ -89,10 +78,7 @@ if titres_file and especes_file:
         df_allOperations = pd.concat([df_versements, df_montantsNet], axis=0, ignore_index=True)
 
         df_allOperations = df_allOperations.groupby("Date")["Montant net"].sum()
-        # rebuild compte espece from versements and
         df_compte_espece = df_allOperations.cumsum()
-        # for i in range(1, len(df_montantsNet)):
-        #     df_compte_espece.loc[i, 'Montant net'] = df_compte_espece['Montant net'][i] + df_compte_espece['Montant net'][i-1] 
 
         # make df_versement cumulative
         df_versements = df_versements.groupby("Date")["Montant net"].sum().cumsum()
@@ -129,7 +115,6 @@ if titres_file and especes_file:
         st.stop()
 
     # Valorisation des titres via Yahoo Finance
-    # current_valo = 0.0
     price_data = {}
     hist_data = {}
     valuation_details = []
@@ -143,18 +128,6 @@ if titres_file and especes_file:
     elif pas_temps == "Année":
         theInterval='1y'    
 
-    # ticker_list = []
-    # for titre in position_matrix.columns:
-    #     try:
-    #         ticker = ticker_map.get(titre)
-    #         ticker_list.append(ticker)
-    #     except Exception as e:            
-    #         print(f'Erreur pour le titre {titre} : {e}')        
-    #         errors.append(titre)        
-    # all_symbols = " ".join(ticker_list)
-
-    # tickersData = yf.download(all_symbols, start=start_date, end=end_date, interval=theInterval, group_by='tickers')
-    # tickersData.index = tickersData.index.tz_localize(None)
     tickersInfo = dict()
 
     # st.sidebar.subheader("Valorisation actuelle estimée")
@@ -176,10 +149,6 @@ if titres_file and especes_file:
                 else:
                     raise Exception(f'Introuvable sur yfinance, ajouter la correspondance ticker-titre dans le fichier tickerMatching.csv')
 
-            # if tickersData[ticker] is not None:
-            # hist2 = tickersData[ticker]
-            # last_price_hist2 = hist2["Close"].iloc[-1]
-            
             hist = yf.Ticker(ticker).history(start=start_date, end=end_date, interval=theInterval)#.ffill().bfill()
             hist.index = hist.index.tz_localize(None) # make dates compatible
             
@@ -188,9 +157,6 @@ if titres_file and especes_file:
             last_price = hist["Close"].iloc[-1]
             latest_qty = position_matrix[titre].iloc[-1]
             val = last_price * latest_qty
-            # current_valo += val
-            # Hist -> tous les x jours
-            # position_matrix -> a chaque changement
 
             price_data[titre] = position_matrix[titre].copy()
             hist_data[titre] = pd.Series(index=price_data[titre].index, dtype=float).fillna(0)
@@ -203,16 +169,7 @@ if titres_file and especes_file:
                     previousHistIndex = hist.index.get_indexer([aDate], method='ffill')                        
                     price_data[titre].iloc[i] = price_data[titre].iloc[i] * hist["Close"].iloc[previousHistIndex] 
                     hist_data[titre].iloc[i] = hist["Close"].iloc[previousHistIndex]
-            # first copy history for this title
-            # price_data[titre] = hist["Close"]
 
-            # price_data[titre] = price_data[titre].apply(lambda row: row['toto'] *  if pd.notna(row) else 0)
-
-            # df_especes = df_especes.apply(lambda row: row['Crédit'] + row['Débit'], axis=1)
-            # price_data[titre] = hist["Close"] * position_matrix[titre]
-
-            # # position_matrix[titre].reindex(hist.index).ffill() 
-            # price_data[titre] = hist["Close"] * position_matrix[titre]
             valuation_details.append({"Titre": titre, "Quantité": latest_qty, "Prix actuel": last_price, "Valeur": val})
         except Exception as e:
             st.sidebar.error(f'Erreur sur {titre} : {e}')
@@ -242,6 +199,18 @@ if titres_file and especes_file:
         key="ticker_editor"
     )
 
+    # Ajout du bouton de téléchargement, même si le fichier n'existe pas encore
+    csv_buffer = io.StringIO()
+    edited_mapping.to_csv(csv_buffer, encoding="latin1", sep=";", index=False)
+    csv_data = csv_buffer.getvalue()
+
+    st.download_button(
+        label="⬇️ Télécharger la correspondance tickers (CSV)",
+        data=csv_data,
+        file_name="tickerMatching.csv",
+        mime="text/csv"
+    )
+
     if st.button("💾 Sauvegarder la correspondance tickers"):
         try:
             edited_mapping.drop_duplicates(subset=["label"], keep="last", inplace=True)
@@ -252,10 +221,6 @@ if titres_file and especes_file:
             st.error(f"Erreur lors de la sauvegarde : {e}")
 
     st.markdown("---")    
-
-    # df_valo.index = pd.to_datetime(df_valo.index).tz_localize(None)
-    # df_versements.index = pd.to_datetime(df_versements.index).tz_localize(None)
-    # df_versements = df_versements.reindex(df_valo.index, method="ffill")
 
     df_compte_espece.index = pd.to_datetime(df_compte_espece.index).tz_localize(None)
     # df_compte_especeNotReIndexed = df_compte_espece.copy()
@@ -287,9 +252,6 @@ if titres_file and especes_file:
     element = df_perf["Versements cumulés"].loc[df_perf.index[0]]
     df_perf.loc[df_perf.index[0], 'Flux'] = element
     df_perf["Valeur"] = df_perf["Valorisation cumulée"]
-
-    # st.subheader("Courbes de valorisation et versements")
-    # st.line_chart(df_perf[["Valorisation cumulée", "Compte Espèce", "Versements cumulés"]])
 
     # --- Ajout graphique rendement global ---
     rendement_global = (df_perf["Valorisation cumulée"] / df_perf["Versements cumulés"] - 1).replace([np.inf, -np.inf], np.nan).fillna(0) * 100
@@ -328,10 +290,6 @@ if titres_file and especes_file:
         hovermode="x unified"
     )
     st.plotly_chart(fig_rend, use_container_width=True)
-
-
-    # st.subheader("Rendement global (Valorisation / Versements cumulés - 1)")
-    # st.line_chart(rendement_global.rename("Rendement global"))
     
     # st.subheader("Évolution de chaque position depuis le premier achat (base 0% à l'achat initial)")
     evolution_positions = pd.DataFrame(index=df_price_total.index)
@@ -353,18 +311,6 @@ if titres_file and especes_file:
 
             evolution.loc[:] = (histData.loc[:] / base_value -1)*100
 
-            # if (qty == 0).any():
-            #     last_zero = qty[qty == 0].index
-            #     last_zero = last_zero[last_zero > first_invest_loc]
-            #     if not last_zero.empty:
-            #         end_evolution = last_zero[0]
-            #         evolution.loc[first_invest_loc:end_evolution] = (histData.loc[first_invest_loc:end_evolution] / base_value -1)*100
-            #         evolution.loc[end_evolution:] = 0
-            #     else:
-            #         evolution.loc[first_invest_loc:] = (histData.loc[first_invest_loc:] / base_value -1)*100
-            # else:
-            #     evolution.loc[first_invest_loc:] = (histData.loc[first_invest_loc:] / base_value -1)*100
-            # Réindexer sur l'index cible et remplir les trous
             evolution = evolution.reindex(df_price_total.index).ffill().fillna(0)
             evolution_positions[titre] = evolution
         except IndexError:
@@ -466,58 +412,9 @@ if titres_file and especes_file:
     st.plotly_chart(fig, use_container_width=True)
         # st.line_chart(evolution_positions)
     
-    # def compute_twr(values, flows):
-    #     twr = 1.0
-    #     for i in range(1, len(values)):
-    #         if values[i-1] != 0:
-    #             r = (values[i] - flows[i] - values[i-1]) / values[i-1]
-    #             twr *= (1 + r)
-    #     return twr - 1
-
-    # def compute_mwr(values, flows):
-    #     dates = np.arange(len(values))
-    #     def npv(rate):
-    #         # Add the final value as a negative flow at the end
-    #         return np.sum([(-flows[i]) / ((1 + rate) ** (dates[-1] - dates[i])) for i in range(len(values)-1)]) + (values[-1] - flows[-1])
-    #     try:
-    #         irr = newton(npv, 0.01)
-    #         return irr
-    #     except Exception:
-    #         return np.nan
-
-    # twr = compute_twr(df_perf["Valeur"].values, df_perf["Flux"].values)
-    # mwr = compute_mwr(df_perf["Valeur"].values, df_perf["Flux"].values)    
-
-    # st.subheader("Rendements")
-    # with st.expander("Que signifient TWR et MWR ?"):
-    #     st.markdown("**TWR (Time-Weighted Return)** : mesure la performance du portefeuille indépendamment des apports/retraits.\n\n**MWR (Money-Weighted Return ou TRI)** : prend en compte le calendrier des flux de trésorerie (versements et retraits).")
-
-    # col1, col2 = st.columns(2)
-    # col1.metric("Rendement TWR", f"{twr:.2%}")
-    # col2.metric("Rendement MWR (TRI)", f"{mwr:.2%}")
-
     # valorisation cumulée  + compte espece
     current_valo = df_valo.iloc[-1] + df_compte_espece.iloc[-1]
     st.sidebar.markdown(f"**Valorisation estimée actuelle :** {current_valo:,.2f} €")
-
-    # st.subheader("Comparaison avec le CAC 40")
-
-    # try:
-    #     df_price_total.index = pd.to_datetime(df_price_total.index).tz_localize(None)
-    #     start = df_price_total.index.min()
-    #     end = df_price_total.index.max()
-
-    #     cac40 = yf.Ticker("^FCHI").history(start=start, end=end, interval=thePeriod).ffill().bfill()
-    #     if not cac40.empty:
-    #         cac40.index = cac40.index.tz_localize(None)
-    #         base_cac = cac40["Close"] / cac40["Close"].iloc[0] * df_valo.iloc[0]
-    #         df_compare = df_valo.copy()
-    #         df_compare.index = df_compare.index.tz_localize(None)
-    #         df_compare["CAC 40"] = base_cac.reindex(df_valo.index.tz_localize(None), method="ffill")
-    #         st.line_chart(df_compare)
-
-    # except Exception as e:
-    #     st.warning(f"Erreur récupération CAC40 : {e}")
 
     st.subheader("Valorisation par ligne")
     fig_perf = go.Figure()
@@ -535,19 +432,6 @@ if titres_file and especes_file:
         hovermode="closest"
     )
     st.plotly_chart(fig_perf, use_container_width=True)
-
-    # st.subheader("Téléchargement du rapport PDF")
-    # if st.button("Générer un rapport PDF simplifié"):
-    #     pdf = FPDF()
-    #     pdf.add_page()
-    #     pdf.set_font("Arial", size=12)
-    #     pdf.cell(200, 10, txt="Rapport simplifié de votre PEA", ln=True, align="C")
-    #     pdf.ln(10)
-    #     pdf.cell(200, 10, txt=f"Valorisation estimée actuelle : {current_valo:,.2f} €", ln=True)
-    #     # pdf.cell(200, 10, txt=f"TWR : {twr:.2%} | MWR : {mwr:.2%}", ln=True)
-    #     pdf.output("rapport_pea.pdf")
-    #     with open("rapport_pea.pdf", "rb") as f:
-    #         st.download_button("📄 Télécharger le rapport PDF", f, file_name="rapport_pea.pdf")
 
     st.subheader("Comparaison d'une action avec un indice")
 
@@ -648,32 +532,5 @@ if titres_file and especes_file:
 
     if errors:
         st.sidebar.warning("Titres non valorisés (erreurs ou manque de données Yahoo):")
-        # new_tickers = {}
-        # with st.sidebar.form("add_tickers_form"):
-        #     for titre in errors:
-        #         new_tickers[titre] = st.text_input(f"{titre}", value="")
-        #     submitted = st.form_submit_button("Ajouter les tickers")
-        #     if submitted:
-        #         ticker_mapping_file = os.path.dirname(titres_file) + "/tickerMatching.csv"
-
-        #         # Charger l'ancien mapping
-        #         try:
-        #             mapping_df = pd.read_csv(ticker_mapping_file, encoding="latin1", sep=";")
-        #         except Exception:
-        #             mapping_df = pd.DataFrame(columns=["label", "ticker"])
-        #         # Ajouter les nouveaux tickers
-        #         try:
-        #             for titre, ticker in new_tickers.items():
-        #                 if ticker.strip():
-        #                     new_row = pd.DataFrame([{"label": titre, "ticker": ticker.strip()}])
-        #                     mapping_df = pd.concat([mapping_df, new_row], ignore_index=True)
-        #         except: 
-        #             st.error("Erreur lors de l'ajout des tickers. Veuillez vérifier le format.")
-        #             st.stop()
-        #         # Sauvegarder le fichier
-        #         mapping_df.drop_duplicates(subset=["label"], keep="last", inplace=True)
-
-        #         mapping_df.to_csv(ticker_mapping_file, encoding="latin1", sep=";", index=False)
-        #         st.sidebar.success("Tickers ajoutés. Veuillez relancer l'application pour prise en compte.")
 else:
     st.info("Veuillez importer les deux fichiers pour commencer.")
