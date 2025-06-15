@@ -1,22 +1,20 @@
 import sys
-import io
-import yfinance as yf
+from tempfile import NamedTemporaryFile
+# import io
+from yfinance import Lookup, Ticker
 import pandas as pd
 import numpy as np
-from datetime import date, datetime
-import matplotlib.pyplot as plt
-from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg as FigureCanvas
+from datetime import date
 from PySide6.QtWidgets import (
     QApplication, QMainWindow, QFileDialog, QWidget, QVBoxLayout, QHBoxLayout,
     QPushButton, QLabel, QComboBox, QMessageBox, QTableWidget, QTableWidgetItem,
     QGroupBox, QDateEdit, QCheckBox, QDockWidget, QLineEdit, QToolButton, QGridLayout, QSizePolicy,
     QScrollArea, QHeaderView
 )
-from PySide6.QtCore import Qt, QDate, QDir, QUrl, QSettings
+from PySide6.QtCore import Qt, QDate, QSettings, QUrl
 from PySide6.QtWebEngineWidgets import QWebEngineView
-import plotly.colors
-import plotly.graph_objs as go
-import plotly.io as pio
+from plotly.colors import qualitative
+from plotly.graph_objs import Figure, Scatter
 
 class MainWindow(QMainWindow):
     def __init__(self):
@@ -28,6 +26,16 @@ class MainWindow(QMainWindow):
         self.mapping_df = pd.DataFrame(columns=["label", "ticker"])
         self.ticker_map = {}
         self.settings = QSettings("FortuneoPEAViewer", "UserFiles")
+        
+        # for comparison update
+        self.df_titres_modified = None
+        self.df_price_total = None
+        self.hist_data = None
+        self.start_date = None
+        self.end_date = None
+        self.theInterval = None
+
+        self.sectionsHTML = dict()
         self.init_ui()
 
     def init_ui(self):
@@ -38,9 +46,6 @@ class MainWindow(QMainWindow):
         self.tickersRecallLayout = QHBoxLayout()
         self.btn_show_dock = QPushButton("Tickers")
         self.btn_show_dock.setVisible(False)
-        self.tickersRecallLayout.addStretch()
-        self.tickersRecallLayout.addWidget(self.btn_show_dock)
-        left_layout.addLayout(self.tickersRecallLayout)
         self.btn_show_dock.clicked.connect(self.restore_dock)        
 
         # --- Import group with persistent file paths ---
@@ -69,6 +74,7 @@ class MainWindow(QMainWindow):
         import_group.setLayout(import_layout)
 
         # Ajout d'un bouton rétractable pour le groupe d'import
+
         import_toggle = QToolButton()
         import_toggle.setText("Import des fichiers")
         import_toggle.setCheckable(True)
@@ -82,7 +88,12 @@ class MainWindow(QMainWindow):
             )
         )
 
-        left_layout.addWidget(import_toggle)
+        self.tickersRecallLayout.addWidget(import_toggle)
+        self.tickersRecallLayout.addStretch()
+        self.tickersRecallLayout.addWidget(self.btn_show_dock)
+        left_layout.addLayout(self.tickersRecallLayout)
+
+        # left_layout.addWidget(import_toggle)
         left_layout.addWidget(import_group)
 
         options_group = QGroupBox("") #Import des fichiers
@@ -122,30 +133,6 @@ class MainWindow(QMainWindow):
         # Met à jour la liste des indices
         indices = list(self.liste_indices.keys())
 
-        # Sélecteur d'action du portefeuille
-        compare_layout = QHBoxLayout()
-        self.combo_titre = QComboBox()
-        self.combo_titre.setPlaceholderText("Choisir une action du portefeuille à comparer")
-
-        # Sélecteur d'indice de référence
-        self.combo_indice = QComboBox()
-        self.combo_indice.setPlaceholderText("Choisir un indice de référence à comparer")
-        self.combo_indice.addItems(indices)
-
-        # options_layout.addWidget(QLabel("Indice de référence à comparer :"))
-        compare_layout.addWidget(QLabel("Comparer : "))
-        compare_layout.addWidget(self.combo_titre)
-        compare_layout.addWidget(QLabel(" Avec "))
-        compare_layout.addWidget(self.combo_indice)
-        compare_layout.addStretch()
-
-        options_layout.addLayout(compare_layout)
-
-        # Checkbox for FX
-        self.checkbox_fx = QCheckBox("Intégrer le taux de change EUR/USD pour les indices internationaux")
-        self.checkbox_fx.setChecked(True)
-        options_layout.addWidget(self.checkbox_fx)
-
         options_group.setLayout(options_layout)
 
         # Ajout d'un bouton rétractable pour le groupe d'options
@@ -165,11 +152,52 @@ class MainWindow(QMainWindow):
         left_layout.addWidget(options_toggle)
         left_layout.addWidget(options_group)        
 
-        # Création du widget contenant le QWebEngineView
         plotly_container = QWidget()
         plotly_layout = QVBoxLayout(plotly_container)
+        self.section_combo = QComboBox()
+        self.section_combo.setPlaceholderText("Choisir une section à afficher")
+        self.section_combo.currentIndexChanged.connect(self.on_section_changed)
+
+        # Sélecteur d'action du portefeuille
+        self.compare_widget = QWidget()
+
+        self.compare_section_name = "Comparaison d'une action avec un indice"
+        compare_widget_layout = QVBoxLayout()
+        # Checkbox for FX
+        self.checkbox_fx = QCheckBox("Intégrer le taux de change EUR/USD pour les indices internationaux")
+        self.checkbox_fx.setChecked(True)
+
+        compare_layout = QHBoxLayout()
+        self.combo_titre = QComboBox()
+        self.combo_titre.setPlaceholderText("Choisir une action du portefeuille à comparer")
+
+        # Sélecteur d'indice de référence
+        self.combo_indice = QComboBox()
+        self.combo_indice.setPlaceholderText("Choisir un indice de référence à comparer")
+        self.combo_indice.addItems(indices)
+
+        self.combo_titre.currentIndexChanged.connect(self.updateComparison)
+        self.combo_indice.currentIndexChanged.connect(self.updateComparison)        
+
+        # options_layout.addWidget(QLabel("Indice de référence à comparer :"))
+        compare_layout.addWidget(QLabel("Comparer : "))
+        compare_layout.addWidget(self.combo_titre)
+        compare_layout.addWidget(QLabel(" Avec "))
+        compare_layout.addWidget(self.combo_indice)
+        compare_layout.addStretch()
+        compare_widget_layout.addLayout(compare_layout)
+        compare_widget_layout.addWidget(self.checkbox_fx)
+
+        self.compare_widget.setLayout(compare_widget_layout)
+        self.compare_widget.hide()
+
         self.plotly_view = QWebEngineView()
         self.plotly_view.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+        plotly_layout.addWidget(self.section_combo)
+        plotly_layout.addWidget(self.compare_widget)
+        # plotly_layout.addLayout(compare_layout)
+
+        # Création du widget contenant le QWebEngineView
         plotly_layout.addWidget(self.plotly_view)
 
         # Création de la scroll area
@@ -181,12 +209,12 @@ class MainWindow(QMainWindow):
         left_layout.addWidget(scroll_area, stretch=2)
 
         # Status label
-        self.status_group = QGroupBox("Status") #Import des fichiers
-        self.status_layout = QVBoxLayout()
+        # self.status_group = QGroupBox("Status") #Import des fichiers
+        # self.status_layout = QVBoxLayout()
         self.label_status = QLabel("Veuillez charger les fichiers.")
-        self.status_layout.addWidget(self.label_status)
-        self.status_group.setLayout(self.status_layout)
-        left_layout.addWidget(self.status_group)
+        # self.status_layout.addWidget(self.label_status)
+        # self.status_group.setLayout(self.status_layout)
+        left_layout.addWidget(self.label_status )
 
         main_layout.addLayout(left_layout)
 
@@ -219,7 +247,7 @@ class MainWindow(QMainWindow):
         # self.btn_load_mapping.clicked.connect(self.load_mapping)
         self.btn_save_mapping.clicked.connect(self.save_mapping)
         self.combo_interval.currentIndexChanged.connect(self.process_and_plot)
-        self.checkbox_fx.stateChanged.connect(self.process_and_plot)
+        self.checkbox_fx.stateChanged.connect(self.updateComparison)
         self.date_start.dateChanged.connect(self.process_and_plot)
         self.date_end.dateChanged.connect(self.process_and_plot)
 
@@ -328,12 +356,22 @@ class MainWindow(QMainWindow):
             except Exception as e:
                 QMessageBox.critical(self, "Erreur", f"Erreur lors de la sauvegarde : {e}")
 
-    def addSection(self, html, title, fig):
-        html += "\n<div style='font-size:1.3em;font-weight:bold;margin:30px 0 10px 0;'>"+title+"</div>\n"
-        html +=  pio.to_html(fig, full_html=False, include_plotlyjs='cdn')
-        html += "\n<hr style='margin:30px 0;'>\n"
-        return html
-
+    def addSection(self, title, fig):
+        html = fig.to_html(full_html=True, include_plotlyjs='cdn')
+        lenSection = len(html.encode("utf-8"))
+        if lenSection > 2_000_000:
+            # Write to a temp file
+            tmp = NamedTemporaryFile(delete=False, suffix=".html")
+            tmp.write(html.encode("utf-8"))
+            tmp.close()
+            # Store the file path or QUrl for this section
+            self.sectionsHTML[title] = QUrl.fromLocalFile(tmp.name)
+            self.label_status.setText(
+                f"Section '{title}' is too large ({lenSection} bytes), loaded from disk."
+            )
+        else:
+            self.sectionsHTML[title] = html
+    
     def process_and_plot(self):
         # Vérifie que les deux fichiers sont chargés
         if self.df_titres is None or self.df_especes is None or len(self.mapping_df) == 0:
@@ -344,7 +382,6 @@ class MainWindow(QMainWindow):
         start_date  = self.date_start.date().toPython()
         end_date  = self.date_end.date().toPython()
         pas_temps = self.combo_interval.currentText()
-        html = '<html>\n<head><meta charset="utf-8" /></head>\n<body>\n'
         
         # align dates
         try:
@@ -432,7 +469,7 @@ class MainWindow(QMainWindow):
                     if ticker_map.get(titre) is not None:
                         ticker = ticker_map[titre]
                     else:            
-                        lookupTickers = yf.Lookup(titre).all
+                        lookupTickers = Lookup(titre).all
                         if len(lookupTickers) > 0:
                             # favorise les tickers de paris, sur Fortuneo, il y a de bonnes chances que ce soit les bons
                             tickers_pa = [idx for idx in lookupTickers.index if idx.endswith('.PA')]
@@ -445,7 +482,7 @@ class MainWindow(QMainWindow):
                         else:
                             raise Exception(f'Introuvable sur yfinance, ajouter la correspondance ticker-titre dans le fichier tickerMatching.csv')
 
-                    hist = yf.Ticker(ticker).history(start=start_date, end=end_date, interval=theInterval)#.ffill().bfill()
+                    hist = Ticker(ticker).history(start=start_date, end=end_date, interval=theInterval)#.ffill().bfill()
                     hist.index = hist.index.tz_localize(None) # make dates compatible
                     
                     last_price = hist["Close"].iloc[-1]
@@ -466,7 +503,7 @@ class MainWindow(QMainWindow):
 
                     valuation_details.append({"Titre": titre, "Quantité": latest_qty, "Prix actuel": last_price, "Valeur": val})
 
-                    # aTicker = yf.Ticker(ticker)
+                    # aTicker = Ticker(ticker)
                     # tickersInfo[titre] = aTicker.info.copy()
                 except Exception as e:
                     self.label_status.setText(f'Erreur sur {titre} : {e}')
@@ -478,7 +515,7 @@ class MainWindow(QMainWindow):
             df_valo.index.name = "Date"
 
             # update mapping_df after looking for missing tickers
-            self.mapping_df.from_dict(ticker_map, orient='index', columns=['ticker']).reset_index().rename(columns={'index': 'label'})
+            self.mapping_df = self.mapping_df.from_dict(ticker_map, orient='index', columns=['ticker']).reset_index().rename(columns={'index': 'label'})
             self.update_mapping_table()
 
             df_compte_espece.index = pd.to_datetime(df_compte_espece.index).tz_localize(None)
@@ -515,17 +552,18 @@ class MainWindow(QMainWindow):
             # valorisation cumulée  + compte espece
             current_valo = df_valo.iloc[-1] + df_compte_espece.iloc[-1]
 
-            html += f"<div style='font-size:1.3em;font-weight:bold;margin:30px 0 10px 0;'>**Valorisation estimée actuelle :** {current_valo:,.2f} €</div>"
-            html += "<hr style='margin:40px 0;'>"        
+            self.sectionsHTML['Valorisation estimée'] = '<html>\n<head><meta charset="utf-8" /></head>\n<body>\n'
+            self.sectionsHTML['Valorisation estimée'] += f"<div style='font-size:1.3em;font-weight:bold;margin:30px 0 10px 0;'>**Valorisation estimée actuelle :** {current_valo:,.2f} €</div>"
+            self.sectionsHTML['Valorisation estimée'] += "<hr style='margin:40px 0;'>"
 
             # --- Ajout graphique rendement global ---
             rendement_global = (df_perf["Valorisation cumulée"] / df_perf["Versements cumulés"] - 1).replace([np.inf, -np.inf], np.nan).fillna(0) * 100
 
             # --- Courbes de valorisation et versements ---
             
-            fig_val = go.Figure()
+            fig_val = Figure()
             for col in ["Valorisation cumulée", "Compte Espèce", "Versements cumulés"]:
-                fig_val.add_trace(go.Scatter(
+                fig_val.add_trace(Scatter(
                     x=df_perf.index,
                     y=df_perf[col],
                     mode='lines',
@@ -538,11 +576,11 @@ class MainWindow(QMainWindow):
                 hovermode="x unified"
             )
 
-            html = self.addSection(html, "Courbes de valorisation et versements", fig_val)
+            self.addSection("Courbes de valorisation et versements", fig_val)
         
             # --- Rendement global ---
-            fig_rend = go.Figure()
-            fig_rend.add_trace(go.Scatter(
+            fig_rend = Figure()
+            fig_rend.add_trace(Scatter(
                 x=df_perf.index,
                 y=rendement_global,
                 mode='lines',
@@ -554,7 +592,7 @@ class MainWindow(QMainWindow):
                 yaxis_title="Rendement (%)",
                 hovermode="x unified"
             )
-            html = self.addSection(html, "Rendement global ( (Valorisation +  especes) / Versements cumulés - 1)", fig_rend)
+            self.addSection("Rendement global ( (Valorisation +  especes) / Versements cumulés - 1)", fig_rend)
 
             evolution_positions = pd.DataFrame(index=df_price_total.index)
             
@@ -581,9 +619,9 @@ class MainWindow(QMainWindow):
                     evolution_positions[titre] = 0 
 
             
-            fig = go.Figure()
+            fig = Figure()
             # Assign a color to each title
-            palette = plotly.colors.qualitative.Vivid
+            palette = qualitative.Vivid
             color_map = {titre: palette[i % len(palette)] for i, titre in enumerate(evolution_positions.columns)}
 
             for titre in evolution_positions.columns:
@@ -606,34 +644,55 @@ class MainWindow(QMainWindow):
                     # traillingPEValue = tickersInfo[titre]['trailingPE'] if 'trailingPE' in tickersInfo[titre] else 'NA'
                     # forwardPEValue = tickersInfo[titre]['forwardPE'] if 'forwardPE' in tickersInfo[titre] else 'NA'
                     # priceToBookValue = tickersInfo[titre]['priceToBook'] if 'priceToBook' in tickersInfo[titre] else 'NA'
-                
+
+                    # customText=[f"{titre}<br>Date: {evolution.index[i].strftime('%Y-%m-%d')}<br>Cote: {hist_data[titre].iloc[i]:.2f}€<br>Évolution: {evolution.iloc[i]:.2f}%<br>Position: {df_price_total[titre].iloc[i]:,.2f} €<br>profitMargins:{profitMarginsValue}<br>Dividend Rate: {dividendRateValue}<br>Trailing P/E: {traillingPEValue}<br>Forward P/E: {forwardPEValue}<br>Price to Book: {priceToBookValue}" for i in range(len(evolution))]
+                    # customText=[f"{titre}<br>Date: {evolution.index[i].strftime('%Y-%m-%d')}<br>Cote: {hist_data[titre].iloc[i]:.2f}€<br>Évolution: {evolution.iloc[i]:.2f}%<br>Position: {df_price_total[titre].iloc[i]:,.2f} €" for i in range(len(evolution))],
+                    # customText=[f"{titre}<br>Date: {evolution.index[i].strftime('%Y-%m-%d')}<br>Cote: {hist_data[titre].iloc[i]:.2f}€<br>Évo: {evolution.iloc[i]:.2f}%<br>Pos.: {df_price_total[titre].iloc[i]:,.2f} €" for i in range(len(evolution))],
+                    # customText="test"
+
+
+                    # hoverTemplateFormula=[f"{name}<br>Date: {evolution.index[i].strftime('%Y-%m-%d')}<br>Cote: {hist_data[titre].iloc[i]:.2f}€<br>Évolution: {evolution.iloc[i]:.2f}%<br>Position: {df_price_total[titre].iloc[i]:,.2f} €" for i in range(len(evolution))],
+
+                    # fig.add_trace(Scatter(
+                    #     x=dates,
+                    #     y=values,
+                    #     customdata=short_labels,  # array of short strings or numbers
+                    #     mode='lines+markers',
+                    #     hovertemplate="Date: %{x}<br>Valeur: %{y:.2f} €<br>Label: %{customdata}<extra></extra>"
+                    # ))
+                                
+
+                    df_triplet = pd.DataFrame({"hist": hist_data[titre],"evolution": evolution,"price_total": df_price_total[titre]})
+
+                    hovertemplateString="Date: %{x}<br>Cote: %{customdata[0]:.2f}€<br>Évolution: %{customdata[1]:.2f}%<br>Position: %{customdata[2]:,.2f} €"
                     # Dotted line: before first hold or from first_zero to the end
-                    fig.add_trace(go.Scatter(
+                    fig.add_trace(Scatter(
                         x=evolution.index,
                         y=[e if (d <= first_hold or d >= first_zero) else None for d, e in zip(evolution.index, evolution)],
                         mode='lines',
                         name=titre,
+                        customdata=df_triplet,
                         line=dict(dash='dot', color=color),
                         legendgroup=titre,
-                        # text=[f"{titre}<br>Date: {evolution.index[i].strftime('%Y-%m-%d')}<br>Cote: {hist_data[titre].iloc[i]:.2f}€<br>Évolution: {evolution.iloc[i]:.2f}%<br>Position: {df_price_total[titre].iloc[i]:,.2f} €<br>profitMargins:{profitMarginsValue}<br>Dividend Rate: {dividendRateValue}<br>Trailing P/E: {traillingPEValue}<br>Forward P/E: {forwardPEValue}<br>Price to Book: {priceToBookValue}"
-                        text=[f"{titre}<br>Date: {evolution.index[i].strftime('%Y-%m-%d')}<br>Cote: {hist_data[titre].iloc[i]:.2f}€<br>Évolution: {evolution.iloc[i]:.2f}%<br>Position: {df_price_total[titre].iloc[i]:,.2f} €"
-                            for i in range(len(evolution))],
-                        hoverinfo='text'
+                        hoverinfo='text',
+                        hovertemplate=hovertemplateString
                     ))
+
                     # Solid line: from first_hold to first_zero (excluded)
-                    fig.add_trace(go.Scatter(
+                    fig.add_trace(Scatter(
                         x=evolution.index,
                         y=[e if (d >= first_hold and d <= first_zero) else None for d, e in zip(evolution.index, evolution)],
                         mode='lines',
                         name=titre,
+                        customdata=df_triplet,
                         line=dict(dash='solid', color=color),
                         legendgroup=titre,
                         showlegend=False,
-                        #text=[f"{titre}<br>Date: {evolution.index[i].strftime('%Y-%m-%d')}<br>Cote: {hist_data[titre].iloc[i]:.2f}€<br>Évolution: {evolution.iloc[i]:.2f}%<br>Position: {df_price_total[titre].iloc[i]:,.2f} €<br>profitMargins:{profitMarginsValue}<br>Dividend Rate: {dividendRateValue}<br>Trailing P/E: {traillingPEValue}<br>Forward P/E: {forwardPEValue}<br>Price to Book: {priceToBookValue}"
-                        text=[f"{titre}<br>Date: {evolution.index[i].strftime('%Y-%m-%d')}<br>Cote: {hist_data[titre].iloc[i]:.2f}€<br>Évolution: {evolution.iloc[i]:.2f}%<br>Position: {df_price_total[titre].iloc[i]:,.2f} €"
-                            for i in range(len(evolution))],
-                        hoverinfo='text'
-                    ))                
+                        # text=customText,
+                        hoverinfo='text',
+                        #x.strftime('%Y-%m-%d')
+                        hovertemplate=hovertemplateString
+                    ))
                     # Ajout des marqueurs d'achats et ventes
                     df_ops = df_titres[df_titres["libellé"] == titre]
                     for op_type, color_marker, symbol in [
@@ -646,9 +705,14 @@ class MainWindow(QMainWindow):
                         if not ops.empty:
                             ops = ops.groupby("Date", as_index=False).agg({"Montant net": "sum"})
                             dates_ops = ops["Date"]
-                            y_ops = evolution.loc[dates_ops].values
+
+                            idx = evolution.index.searchsorted(dates_ops, side='left')
+                            idx = np.clip(idx, 0, len(evolution.index) - 1)
+                            y_ops = evolution.values[idx]
+
+                            # y_ops = evolution.loc[dates_ops].values
                             montant_ops = -ops["Montant net"].values
-                            fig.add_trace(go.Scatter(
+                            fig.add_trace(Scatter(
                                 x=dates_ops,
                                 y=y_ops,
                                 mode="markers",
@@ -675,11 +739,11 @@ class MainWindow(QMainWindow):
                 hovermode="closest" # "x" for boxes or "x unified" for all
             )
 
-            html = self.addSection(html, "Évolution de chaque position depuis le premier achat (base 0% à l'achat initial)", fig)
+            self.addSection("Évolution de chaque position depuis le premier achat (base 0% à l'achat initial)", fig)
 
-            fig_perf = go.Figure()
+            fig_perf = Figure()
             for titre in df_price_total.drop(columns="Total").columns:
-                fig_perf.add_trace(go.Scatter(
+                fig_perf.add_trace(Scatter(
                     x=df_price_total.index,
                     y=df_price_total[titre],
                     mode='lines',
@@ -692,115 +756,174 @@ class MainWindow(QMainWindow):
                 hovermode="closest"
             )
 
-            html = self.addSection(html, "Valorisation par ligne", fig_perf)
+            self.addSection("Valorisation par ligne", fig_perf)
             
-            # titre_choisi = self.combo_titre.currentText()
-            # indice_choisi_nom = self.combo_indice.currentText()
+            self.df_titres_modified = df_titres
+            self.df_price_total = df_price_total
+            self.hist_data = hist_data
+            self.start_date = start_date
+            self.end_date = end_date
+            self.theInterval = theInterval
 
-            # if titre_choisi != '' and indice_choisi_nom != '':
-            #     indice_choisi_ticker = self.liste_indices.get(indice_choisi_nom, "")
-            #     convert_fx = self.checkbox_fx.isChecked()
-
-            #     # 2. Récupération des données
-            #     first_invest_date = df_titres[(df_titres["libellé"] == titre_choisi) & (df_titres["Opération"].str.contains("Achat|SCRIPT", na=False))]["Date"].min()
-            #     if pd.isna(first_invest_date):
-            #         self.label_status.setText("Achat introuvable pour ce titre.")
-            #     else:
-            #         # Récupère les prix de l'action et de l'indice
-            #         prix_action = hist_data[titre_choisi].reindex(df_price_total.index).ffill()
-            #         hist_indice = yf.Ticker(indice_choisi_ticker).history(start=start_date, end=end_date, interval=theInterval) #start=first_invest_date, end=df_price_total.index[-1]
-            #         hist_indice.index = hist_indice.index.tz_localize(None)
-            #         prix_indice = hist_indice["Close"].reindex(df_price_total.index).ffill()
-
-            #         if convert_fx and indice_choisi_nom in ["MSCI World", "S&P500", "NASDAQ100"]:
-            #             # Récupère le taux EUR/USD sur la même période
-            #             eurusd = yf.Ticker("EURUSD=X").history(start=start_date, end=end_date, interval=theInterval)
-            #             eurusd.index = eurusd.index.tz_localize(None)
-            #             taux_eur_usd = eurusd["Close"].reindex(df_price_total.index).ffill()
-            #             # Conversion USD -> EUR (1 USD = X EUR donc 1 EUR = 1/X USD)
-            #             prix_indice = prix_indice / taux_eur_usd        
-
-            #         # 3. Calcul base 0% à la date du premier achat
-            #         try:
-            #             base_action = prix_action.loc[first_invest_date]
-            #             base_indice = prix_indice.loc[first_invest_date]
-            #             evol_action = (prix_action / base_action - 1) * 100
-            #             evol_indice = (prix_indice / base_indice - 1) * 100
-            #         except Exception:
-            #             self.label_status.setText("Impossible de calculer l'évolution (données manquantes).")
-            #             evol_action = evol_indice = pd.Series(index=prix_action.index, data=np.nan)
-
-            #     # 4. Affichage graphique
-            #     fig_compare = go.Figure()
-
-            #     # Action : dot avant achat, solide après
-            #     fig_compare.add_trace(go.Scatter(
-            #         x=evol_action.index,
-            #         y=[evol_action.loc[d] if d <= first_invest_date else None for d in evol_action.index],
-            #         mode='lines',
-            #         name=f"{titre_choisi} (avant achat)",
-            #         line=dict(color='blue', dash='dot'),
-            #         legendgroup=titre_choisi,
-            #         showlegend=False,
-            #         hovertemplate=f"{titre_choisi}<br>Date: %{{x|%Y-%m-%d}}<br>Évolution: %{{y:.2f}}%<extra></extra>"
-            #     ))
-            #     fig_compare.add_trace(go.Scatter(
-            #         x=evol_action.index,
-            #         y=[evol_action.loc[d] if d >= first_invest_date else None for d in evol_action.index],
-            #         mode='lines',
-            #         name=titre_choisi,
-            #         legendgroup=titre_choisi,
-            #         line=dict(color='blue', dash='solid'),
-            #         hovertemplate=f"{titre_choisi}<br>Date: %{{x|%Y-%m-%d}}<br>Évolution: %{{y:.2f}}%<extra></extra>"
-            #     ))
-
-            #     # Indice : dot avant achat, solide après
-            #     fig_compare.add_trace(go.Scatter(
-            #         x=evol_indice.index,
-            #         y=[evol_indice.loc[d] if d <= first_invest_date else None for d in evol_indice.index],
-            #         mode='lines',
-            #         name=f"{indice_choisi_nom} (avant achat)",
-            #         line=dict(color='orange', dash='dot'),
-            #         showlegend=False,
-            #         legendgroup=indice_choisi_nom,
-            #         hovertemplate=f"{indice_choisi_nom}<br>Date: %{{x|%Y-%m-%d}}<br>Évolution: %{{y:.2f}}%<extra></extra>"
-            #     ))
-            #     fig_compare.add_trace(go.Scatter(
-            #         x=evol_indice.index,
-            #         y=[evol_indice.loc[d] if d >= first_invest_date else None for d in evol_indice.index],
-            #         mode='lines',
-            #         name=indice_choisi_nom,
-            #         legendgroup=indice_choisi_nom,
-            #         line=dict(color='orange', dash='solid'),
-            #         hovertemplate=f"{indice_choisi_nom}<br>Date: %{{x|%Y-%m-%d}}<br>Évolution: %{{y:.2f}}%<extra></extra>"
-            #     ))
-
-            #     fig_compare.update_layout(
-            #         title=f"Comparaison {titre_choisi} vs {indice_choisi_nom} (base 0% au premier achat)",
-            #         xaxis_title="Date",
-            #         yaxis_title="Évolution (%)",
-            #         hovermode="x unified"
-            #     )
-
-            #     html = self.addSection(html, "Comparaison d'une action avec un indice", fig_compare)
+            self.updateComparison()
 
             self.label_status.setText("Graphique mis à jour.")
         except Exception as e:
             self.label_status.setText(f"Erreur lors du traitement : {e}")
 
-        html += '\n</body>\n</html>'
-        self.plotly_view.setHtml(html)            
+        self.section_combo.blockSignals(True)
+        self.section_combo.clear()
+        self.section_combo.addItems(list(self.sectionsHTML.keys()))
+        self.section_combo.blockSignals(False)
 
-    def show_plotly(self, figs):
-        # Concatène les HTML de chaque figure
-        html = ""
-        for i, fig in enumerate(figs):
-            # Ajoute un séparateur visuel entre les graphes si plusieurs
-            if i > 0:
-                html += "<hr style='margin:40px 0;'>"
-            html +=  pio.to_html(fig, full_html=False, include_plotlyjs='cdn')
+        # Affiche la première section par défaut si dispo
+        if self.sectionsHTML:
+            self.section_combo.setCurrentIndex(1)  # <-- ceci déclenchera on_section_changed
+
+    def updateComparison(self):
+        titre_choisi = self.combo_titre.currentText()
+        indice_choisi_nom = self.combo_indice.currentText()
+
+        if titre_choisi != '' and indice_choisi_nom != '' and self.df_titres_modified is not None:
             
-        self.plotly_view.setHtml(html)
+            sectionName = self.compare_section_name
+
+            indice_choisi_ticker = self.liste_indices.get(indice_choisi_nom, "")
+            convert_fx = self.checkbox_fx.isChecked()
+
+            # 2. Récupération des données
+            first_invest_date = self.df_titres_modified[(self.df_titres_modified["libellé"] == titre_choisi) & (self.df_titres_modified["Opération"].str.contains("Achat|SCRIPT", na=False))]["Date"].min()
+            if pd.isna(first_invest_date):
+                self.label_status.setText("Achat introuvable pour ce titre.")
+            else:
+                # Récupère les prix de l'action et de l'indice
+                prix_action = self.hist_data[titre_choisi].reindex(self.df_price_total.index).ffill()
+                hist_indice = Ticker(indice_choisi_ticker).history(start=self.start_date, end=self.end_date, interval=self.theInterval) #start=first_invest_date, end=df_price_total.index[-1]
+                hist_indice.index = hist_indice.index.tz_localize(None)
+                prix_indice = hist_indice["Close"].reindex(self.df_price_total.index).ffill()
+
+                if convert_fx and indice_choisi_nom in ["MSCI World", "S&P500", "NASDAQ100"]:
+                    # Récupère le taux EUR/USD sur la même période
+                    eurusd = Ticker("EURUSD=X").history(start=self.start_date, end=self.end_date, interval=self.theInterval)
+                    eurusd.index = eurusd.index.tz_localize(None)
+                    taux_eur_usd = eurusd["Close"].reindex(self.df_price_total.index).ffill()
+                    # Conversion USD -> EUR (1 USD = X EUR donc 1 EUR = 1/X USD)
+                    prix_indice = prix_indice / taux_eur_usd        
+
+                # 3. Calcul base 0% à la date du premier achat
+                try:
+                    base_action = prix_action.loc[first_invest_date]
+                    base_indice = prix_indice.loc[first_invest_date]
+                    evol_action = (prix_action / base_action - 1) * 100
+                    evol_indice = (prix_indice / base_indice - 1) * 100
+                except Exception:
+                    self.label_status.setText("Impossible de calculer l'évolution (données manquantes).")
+                    evol_action = evol_indice = pd.Series(index=prix_action.index, data=np.nan)
+
+            # 4. Affichage graphique
+            fig_compare = Figure()
+
+            # Action : dot avant achat, solide après
+            fig_compare.add_trace(Scatter(
+                x=evol_action.index,
+                y=[evol_action.loc[d] if d <= first_invest_date else None for d in evol_action.index],
+                mode='lines',
+                name=f"{titre_choisi} (avant achat)",
+                line=dict(color='blue', dash='dot'),
+                legendgroup=titre_choisi,
+                showlegend=False,
+                hovertemplate=f"{titre_choisi}<br>Date: %{{x|%Y-%m-%d}}<br>Évolution: %{{y:.2f}}%<extra></extra>"
+            ))
+            fig_compare.add_trace(Scatter(
+                x=evol_action.index,
+                y=[evol_action.loc[d] if d >= first_invest_date else None for d in evol_action.index],
+                mode='lines',
+                name=titre_choisi,
+                legendgroup=titre_choisi,
+                line=dict(color='blue', dash='solid'),
+                hovertemplate=f"{titre_choisi}<br>Date: %{{x|%Y-%m-%d}}<br>Évolution: %{{y:.2f}}%<extra></extra>"
+            ))
+
+            # Indice : dot avant achat, solide après
+            fig_compare.add_trace(Scatter(
+                x=evol_indice.index,
+                y=[evol_indice.loc[d] if d <= first_invest_date else None for d in evol_indice.index],
+                mode='lines',
+                name=f"{indice_choisi_nom} (avant achat)",
+                line=dict(color='orange', dash='dot'),
+                showlegend=False,
+                legendgroup=indice_choisi_nom,
+                hovertemplate=f"{indice_choisi_nom}<br>Date: %{{x|%Y-%m-%d}}<br>Évolution: %{{y:.2f}}%<extra></extra>"
+            ))
+            fig_compare.add_trace(Scatter(
+                x=evol_indice.index,
+                y=[evol_indice.loc[d] if d >= first_invest_date else None for d in evol_indice.index],
+                mode='lines',
+                name=indice_choisi_nom,
+                legendgroup=indice_choisi_nom,
+                line=dict(color='orange', dash='solid'),
+                hovertemplate=f"{indice_choisi_nom}<br>Date: %{{x|%Y-%m-%d}}<br>Évolution: %{{y:.2f}}%<extra></extra>"
+            ))
+
+            fig_compare.update_layout(
+                title=f"Comparaison {titre_choisi} vs {indice_choisi_nom} (base 0% au premier achat)",
+                xaxis_title="Date",
+                yaxis_title="Évolution (%)",
+                hovermode="x unified"
+            )
+
+            self.addSection(sectionName, fig_compare)
+
+            # Test if sectionName is already in the combo
+            already_in_combo = False
+            for i in range(self.section_combo.count()):
+                if self.section_combo.itemText(i) == sectionName:
+                    already_in_combo = True
+                    break
+
+            if not already_in_combo:
+                idx = self.section_combo.currentIndex()
+
+                self.section_combo.blockSignals(True)
+                self.section_combo.clear()
+                self.section_combo.addItems(list(self.sectionsHTML.keys()))
+                self.section_combo.setCurrentIndex(idx)
+                self.section_combo.blockSignals(False)            
+
+            if self.section_combo.itemText(self.section_combo.currentIndex()) == sectionName:
+                # force refresh
+                idx = self.section_combo.currentIndex()
+                self.on_section_changed(idx)       
+        else:
+            self.sectionsHTML[self.compare_section_name] ='<html><body></body></html>'            
+
+    def on_section_changed(self, idx):
+        if idx < 0:
+                return        
+        key = self.section_combo.itemText(idx)
+        if key == self.compare_section_name:
+            self.compare_widget.show()
+        else:
+            self.compare_widget.hide()
+        if key and key in self.sectionsHTML:
+            content = self.sectionsHTML[key]
+            if isinstance(content, QUrl):
+                self.plotly_view.load(content)
+            else:
+                self.plotly_view.setHtml(content)
+        self.plotly_view.repaint()
+
+    # def on_section_changed(self, idx):
+        
+    #     # Récupère le texte de l'item sélectionné
+    #     key = self.section_combo.itemText(idx)
+    #     if key == self.compare_section_name:
+    #         self.compare_widget.show()
+    #     else:
+    #         self.compare_widget.hide()
+    #     if key and key in self.sectionsHTML:
+    #         self.plotly_view.setHtml(self.sectionsHTML[key])
+    #         self.plotly_view.repaint()
 
 if __name__ == "__main__":
     app = QApplication(sys.argv)
